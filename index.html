@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Mapbox GL JS map</title>
+<meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no">
+<link href="https://api.mapbox.com/mapbox-gl-js/v3.10.0/mapbox-gl.css" rel="stylesheet">
+<script src="https://api.mapbox.com/mapbox-gl-js/v3.10.0/mapbox-gl.js"></script>
+<style>
+body { margin: 0; padding: 0; }
+#map { position: absolute; top: 0; bottom: 0; width: 100%; }
+.control-panel {
+    position: absolute;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(255, 255, 255, 0.9);
+    padding: 10px;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    z-index: 1;
+}
+.control-panel button {
+    margin: 0 5px;
+    padding: 8px 16px;
+    border: none;
+    border-radius: 4px;
+    background: #4CAF50;
+    color: white;
+    cursor: pointer;
+    transition: background 0.3s;
+}
+.control-panel button:hover {
+    background: #45a049;
+}
+.control-panel button.secondary {
+    background: #2196F3;
+}
+.control-panel button.secondary:hover {
+    background: #1976D2;
+}
+.marker {
+    display: block;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    background-size: contain;
+    background-repeat: no-repeat;
+    background-position: center;
+    opacity: 0;
+    animation: markerFadeIn 0.5s ease-out forwards;
+    z-index: 1000;
+    transition: opacity 0.5s ease-out;
+}
+.marker.fade-out {
+    opacity: 0;
+}
+
+.path-stop {
+    width: 8px;
+    height: 8px;
+    background-color: #8A2BE2;
+    border-radius: 50%;
+    box-shadow: 0 0 4px rgba(0,0,0,0.3);
+}
+
+@keyframes markerFadeIn {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
+.animated-path {
+    stroke: #8A2BE2;
+    stroke-width: 2;
+    fill: none;
+    stroke-dasharray: 10;
+    animation: dash 30s linear infinite;
+}
+
+@keyframes dash {
+    to {
+        stroke-dashoffset: -1000;
+    }
+}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="control-panel">
+    <button onclick="togglePanning()">Toggle Pan</button>
+    <button onclick="flyToCopenhagen()">Active Deliveries</button>
+    <button onclick="showCopenhagenPath()" class="secondary">Delivery Detail</button>
+    <button onclick="resetAll()" class="secondary">Past Deliveries</button>
+</div>
+<script>
+	mapboxgl.accessToken = 'pk.eyJ1Ijoib3dlbmRvZGQiLCJhIjoiY2t4b3phODNqMjg5ajJ4cGVjbGUxbDliOCJ9.wqQg_Bej_jAd1W5iDVLjrw';
+    const map = new mapboxgl.Map({
+        container: 'map', // container ID
+        style: 'mapbox://styles/owendodd/cm7oke1rg003x01sd7ct85hnt/draft', // stylesheet location
+        center: [-74.5, 40], // starting position [lng, lat]. Note that lat must be set between -90 and 90
+        zoom: 2 // starting zoom - 0 shows the entire world
+    });
+
+    // Define marker locations with custom images
+    const markers = [
+        { 
+            coordinates: [9.8765, 54.7890], 
+            name: 'Package 1',
+            image: './images/salt.png',
+            size: [240, 240]
+        },
+        { 
+            coordinates: [12.3456, 55.4321], 
+            name: 'Package 2',
+            image: './images/moscot.png',
+            size: [240, 240]
+        },
+        { 
+            coordinates: [10.9876, 53.2109], 
+            name: 'Package 3',
+            image: './images/ebay.png',
+            size: [240, 240]
+        },
+        { 
+            coordinates: [11.2345, 54.5678], 
+            name: 'Package 4',
+            image: './images/apc.png',
+             size: [240, 240]
+        }
+    ];
+
+    // Define possible starting points in Europe
+    const europeStartPoints = [
+        [2.3522, 48.8566], // Paris
+        [13.4050, 52.5200], // Berlin
+        [3.3792, 51.7520], // London
+        [12.4964, 41.9028], // Rome
+        [4.9041, 52.3676], // Amsterdam
+        [14.4378, 50.0755], // Prague
+        [19.0402, 47.4979], // Budapest
+        [8.5417, 47.3769], // Zurich
+        [15.9819, 45.8150], // Zagreb
+        [18.0686, 59.3293]  // Stockholm
+    ];
+
+    let markersAdded = false;
+    let pathsAdded = false;
+    let allMarkers = [];
+    let allPaths = [];
+    let allPathMarkers = [];
+    let copenhagenMarker = null;
+    let copenhagenPath = null;
+
+    function generateRandomStops(start, end, numStops) {
+        const stops = [start];
+        for (let i = 0; i < numStops; i++) {
+            const progress = (i + 1) / (numStops + 1);
+            const lat = start[1] + (end[1] - start[1]) * progress;
+            const lng = start[0] + (end[0] - start[0]) * progress;
+            // Add some randomness to the path
+            const randomOffset = 0.5;
+            stops.push([
+                lng + (Math.random() - 0.5) * randomOffset,
+                lat + (Math.random() - 0.5) * randomOffset
+            ]);
+        }
+        stops.push(end);
+        return stops;
+    }
+
+    function addPaths() {
+        if (pathsAdded) return;
+
+        markers.forEach(marker => {
+            // Get random starting point
+            const startPoint = europeStartPoints[Math.floor(Math.random() * europeStartPoints.length)];
+            
+            // Generate 3-6 random stops
+            const numStops = Math.floor(Math.random() * 4) + 3; // Random number between 3 and 6
+            const stops = generateRandomStops(startPoint, marker.coordinates, numStops);
+
+            // Add the path line
+            const sourceId = `path-${marker.name}`;
+            map.addSource(sourceId, {
+                type: 'geojson',
+                data: {
+                    type: 'Feature',
+                    properties: {},
+                    geometry: {
+                        type: 'LineString',
+                        coordinates: stops
+                    }
+                }
+            });
+
+            const layerId = `path-${marker.name}`;
+            map.addLayer({
+                id: layerId,
+                type: 'line',
+                source: sourceId,
+                layout: {},
+                paint: {
+                    'line-color': '#8A2BE2',
+                    'line-width': 4,
+                    'line-opacity': 0.6,
+                    'line-cap': 'round',
+                    'line-join': 'round'
+                }
+            });
+
+            allPaths.push({
+                sourceId,
+                layerId,
+                stops,
+                markerName: marker.name
+            });
+
+            // Add stop markers
+            stops.forEach((stop, index) => {
+                // Skip the final destination point
+                if (index === stops.length - 1) return;
+                
+                const el = document.createElement('div');
+                el.className = 'path-stop';
+                
+                const markerObj = new mapboxgl.Marker(el)
+                    .setLngLat(stop)
+                    .addTo(map);
+
+                allPathMarkers.push({
+                    element: el,
+                    marker: markerObj,
+                    pathName: marker.name
+                });
+            });
+        });
+
+        pathsAdded = true;
+    }
+
+    function addMarkers() {
+        if (markersAdded) return;
+        
+        markers.forEach(marker => {
+            const el = document.createElement('div');
+            el.className = 'marker';
+            
+            // Create and load the image first
+            const img = new Image();
+            img.onload = () => {
+                el.style.backgroundImage = `url(${img.src})`;
+                el.style.width = `${marker.size[0]}px`;
+                el.style.height = `${marker.size[1]}px`;
+            };
+            img.onerror = () => {
+                console.error(`Failed to load image: ${marker.image}`);
+                // Fallback to a colored background if image fails to load
+                el.style.backgroundColor = '#FF0000';
+            };
+            img.src = marker.image;
+
+            const markerObj = new mapboxgl.Marker(el)
+                .setLngLat(marker.coordinates)
+                .setOffset([0, -18])
+                .setPopup(new mapboxgl.Popup({ offset: 25 })
+                    .setHTML(`<h3>${marker.name}</h3>`))
+                .addTo(map);
+
+            allMarkers.push({
+                element: el,
+                marker: markerObj,
+                name: marker.name
+            });
+        });
+        markersAdded = true;
+        addPaths();
+    }
+
+    function showCopenhagenPath() {
+        // Find Package 2 marker
+        const package2 = allMarkers.find(m => m.name === 'Package 2');
+        if (!package2) return;
+
+        // Fade out all markers except Package 2
+        allMarkers.forEach(m => {
+            if (m.name !== 'Package 2') {
+                m.element.style.opacity = '0';
+            }
+        });
+
+        // Fade out all paths except Package 2's
+        allPaths.forEach(path => {
+            if (!path.layerId.includes('Package 2')) {
+                map.setPaintProperty(path.layerId, 'line-opacity', 0);
+            }
+        });
+
+        // Fade out all path markers except Package 2's
+        allPathMarkers.forEach(pathMarker => {
+            if (pathMarker.pathName !== 'Package 2') {
+                pathMarker.element.style.opacity = '0';
+                pathMarker.marker.remove(); // Remove the marker from the map
+            }
+        });
+
+        // Add Copenhagen marker
+        const copenhagenEl = document.createElement('div');
+        copenhagenEl.className = 'marker';
+        copenhagenEl.style.backgroundImage = 'url(./images/copenhagen.png)';
+        copenhagenEl.style.width = '100px';
+        copenhagenEl.style.height = '100px';
+        copenhagenEl.style.opacity = '1'; // Ensure it's visible
+
+        const copenhagenCoords = [12.5683, 55.6761]; // Central Copenhagen coordinates
+        copenhagenMarker = new mapboxgl.Marker(copenhagenEl)
+            .setLngLat(copenhagenCoords)
+            .setOffset([0, -40])
+            .setPopup(new mapboxgl.Popup({ offset: 25 })
+                .setHTML('<h3>Copenhagen</h3>'))
+            .addTo(map);
+
+        // Add path from Package 2 to Copenhagen
+        const pathSourceId = 'copenhagen-path';
+        map.addSource(pathSourceId, {
+            type: 'geojson',
+            data: {
+                type: 'Feature',
+                properties: {},
+                geometry: {
+                    type: 'LineString',
+                    coordinates: [package2.marker.getLngLat().toArray(), copenhagenCoords]
+                }
+            }
+        });
+
+        map.addLayer({
+            id: 'copenhagen-path',
+            type: 'line',
+            source: pathSourceId,
+            layout: {},
+            paint: {
+                'line-color': '#A6A8A9',
+                'line-width': 4,
+                'line-opacity': 0.6,
+                'line-cap': 'round',
+                'line-join': 'round'
+            }
+        });
+
+        // Calculate center point between Package 2 and Copenhagen
+        const centerLng = (package2.marker.getLngLat().lng + copenhagenCoords[0]) / 2;
+        const centerLat = (package2.marker.getLngLat().lat + copenhagenCoords[1]) / 2;
+
+        // Fly to the center point
+        map.flyTo({
+            center: [centerLng, centerLat],
+            zoom: 9.5,
+            duration: 2000
+        });
+    }
+
+    let isPanning = true;
+    let longitude = 3.0420; // Start at Algiers longitude
+    let animationFrameId = null;
+
+    function animate() {
+        if (isPanning) {
+            longitude += 0.025;
+            const currentLat = map.getCenter().lat;
+            map.panTo([longitude, currentLat], { duration: 0, animate: false });
+        }
+        animationFrameId = requestAnimationFrame(animate);
+    }
+
+    function togglePanning() {
+        isPanning = !isPanning;
+    }
+
+    function flyToCopenhagen() {
+        if (animationFrameId) {
+            cancelAnimationFrame(animationFrameId);
+        }
+        isPanning = false;
+
+        // Fade out Copenhagen marker if it exists
+        if (copenhagenMarker) {
+            const markerElement = copenhagenMarker.getElement();
+            markerElement.style.transition = 'opacity 0.5s ease-out';
+            markerElement.style.opacity = '0';
+            setTimeout(() => {
+                copenhagenMarker.remove();
+                copenhagenMarker = null;
+            }, 500);
+        }
+
+        // Remove Copenhagen path
+        if (map.getLayer('copenhagen-path')) {
+            map.removeLayer('copenhagen-path');
+        }
+        if (map.getSource('copenhagen-path')) {
+            map.removeSource('copenhagen-path');
+        }
+
+        // Hide all packages except Package 4
+        allMarkers.forEach(m => {
+            if (m.name !== 'Package 4') {
+                m.element.style.opacity = '0';
+            }
+        });
+
+        // Hide all paths except Package 4's
+        allPaths.forEach(path => {
+            if (!path.layerId.includes('Package 4')) {
+                map.setPaintProperty(path.layerId, 'line-opacity', 0);
+            }
+        });
+
+        // Hide all path markers except Package 4's
+        allPathMarkers.forEach(pathMarker => {
+            if (pathMarker.pathName !== 'Package 4') {
+                pathMarker.element.style.opacity = '0';
+            }
+        });
+
+        map.flyTo({
+            center: [11.1111, 54.5000],
+            zoom: 7,
+            duration: 3000
+        });
+    }
+
+    function resetView() {
+        if (animationFrameId) {
+            cancelAnimationFrame(animationFrameId);
+            animationFrameId = null;
+        }
+        isPanning = false;
+        longitude = -74.5;
+        map.flyTo({
+            center: [-74.5, 40],
+            zoom: 2,
+            duration: 2000
+        }).on('moveend', () => {
+            // After the fly animation completes, allow panning to be toggled again
+            isPanning = true;
+        });
+    }
+
+    function addAnimatedPaths() {
+        // Create 40 random paths
+        const paths = [];
+        for (let i = 0; i < 40; i++) {
+            // Generate random start and end points
+            const startLng = Math.random() * 360 - 180;
+            const startLat = Math.random() * 180 - 90;
+            const endLng = Math.random() * 360 - 180;
+            const endLat = Math.random() * 180 - 90;
+
+            // Create a curved path using multiple points
+            const numPoints = 5;
+            const coordinates = [];
+            for (let j = 0; j < numPoints; j++) {
+                const progress = j / (numPoints - 1);
+                const lat = startLat + (endLat - startLat) * progress;
+                const lng = startLng + (endLng - startLng) * progress;
+                // Add some curve to the path
+                const curveOffset = 20;
+                coordinates.push([
+                    lng + (Math.random() - 0.5) * curveOffset,
+                    lat + (Math.random() - 0.5) * curveOffset
+                ]);
+            }
+
+            // Add the path source and layer
+            const sourceId = `animated-path-${i}`;
+            map.addSource(sourceId, {
+                type: 'geojson',
+                data: {
+                    type: 'Feature',
+                    properties: {},
+                    geometry: {
+                        type: 'LineString',
+                        coordinates: [coordinates[0]] // Start with just the first point
+                    }
+                }
+            });
+
+            const layerId = `animated-path-${i}`;
+            map.addLayer({
+                id: layerId,
+                type: 'line',
+                source: sourceId,
+                layout: {},
+                paint: {
+                    'line-color': '#8A2BE2',
+                    'line-width': 4,
+                    'line-opacity': 0.65,
+                    'line-offset': 0,
+                    'line-cap': 'round',
+                    'line-join': 'round',
+                    'line-blur': 2,
+                    'line-translate': [0, 0],
+                    'line-translate-anchor': 'viewport'
+                }
+            });
+
+            // Add a shadow layer
+            const shadowLayerId = `animated-path-shadow-${i}`;
+            map.addLayer({
+                id: shadowLayerId,
+                type: 'line',
+                source: sourceId,
+                layout: {},
+                paint: {
+                    'line-color': '#000000',
+                    'line-width': 8,
+                    'line-opacity': 0.15,
+                    'line-offset': 0,
+                    'line-cap': 'round',
+                    'line-join': 'round',
+                    'line-blur': 16,
+                    'line-translate': [0, 0],
+                    'line-translate-anchor': 'viewport'
+                }
+            });
+
+            paths.push({
+                sourceId,
+                layerId,
+                shadowLayerId,
+                coordinates,
+                progress: 0,
+                delay: i * 50 // 50ms delay between each path
+            });
+        }
+
+        let completedPaths = 0;
+        // Animate the paths
+        function animatePaths() {
+            paths.forEach(path => {
+                if (path.delay > 0) {
+                    path.delay -= 16; // Approximately one frame at 60fps
+                } else if (path.progress < 1) {
+                    path.progress += 0.005; // Faster animation speed
+
+                    // Calculate the current position along the path
+                    const currentIndex = Math.floor(path.progress * (path.coordinates.length - 1));
+                    const nextIndex = Math.min(currentIndex + 1, path.coordinates.length - 1);
+                    const segmentProgress = path.progress * (path.coordinates.length - 1) - currentIndex;
+
+                    // Interpolate between the current and next point
+                    const currentPoint = path.coordinates[currentIndex];
+                    const nextPoint = path.coordinates[nextIndex];
+                    const currentLng = currentPoint[0] + (nextPoint[0] - currentPoint[0]) * segmentProgress;
+                    const currentLat = currentPoint[1] + (nextPoint[1] - currentPoint[1]) * segmentProgress;
+
+                    // Update the line coordinates to show the path up to the current point
+                    const currentCoordinates = path.coordinates.slice(0, currentIndex + 1);
+                    currentCoordinates.push([currentLng, currentLat]);
+
+                    map.getSource(path.sourceId).setData({
+                        type: 'Feature',
+                        properties: {},
+                        geometry: {
+                            type: 'LineString',
+                            coordinates: currentCoordinates
+                        }
+                    });
+                } else if (path.progress === 1) {
+                    // Path just completed
+                    path.progress = 1.1; // Mark as completed
+                    completedPaths++;
+                    
+                    // Show the complete path
+                    map.getSource(path.sourceId).setData({
+                        type: 'Feature',
+                        properties: {},
+                        geometry: {
+                            type: 'LineString',
+                            coordinates: path.coordinates
+                        }
+                    });
+                }
+            });
+
+            // Continue animation if not all paths are complete
+            if (completedPaths < paths.length) {
+                requestAnimationFrame(animatePaths);
+            }
+        }
+
+        animatePaths();
+    }
+
+    function resetAll() {
+        // Cancel any ongoing animations
+        if (animationFrameId) {
+            cancelAnimationFrame(animationFrameId);
+            animationFrameId = null;
+        }
+
+        // Remove Copenhagen marker and path if they exist
+        if (copenhagenMarker) {
+            copenhagenMarker.remove();
+            copenhagenMarker = null;
+        }
+        if (map.getLayer('copenhagen-path')) {
+            map.removeLayer('copenhagen-path');
+        }
+        if (map.getSource('copenhagen-path')) {
+            map.removeSource('copenhagen-path');
+        }
+
+        // Remove all markers
+        allMarkers.forEach(m => {
+            m.marker.remove();
+        });
+        allMarkers = [];
+
+        // Remove all path markers
+        allPathMarkers.forEach(pm => {
+            pm.marker.remove();
+        });
+        allPathMarkers = [];
+
+        // Remove all paths
+        allPaths.forEach(path => {
+            if (map.getLayer(path.layerId)) {
+                map.removeLayer(path.layerId);
+            }
+            if (map.getSource(path.sourceId)) {
+                map.removeSource(path.sourceId);
+            }
+        });
+        allPaths = [];
+
+        // Reset flags
+        markersAdded = false;
+        pathsAdded = false;
+
+        // Reset animation state
+        isPanning = true;
+        longitude = 3.0420; // Set to Algiers' longitude
+
+        // Remove any existing animated paths
+        const existingSvg = document.querySelector('#map svg');
+        if (existingSvg) {
+            existingSvg.remove();
+        }
+
+        // Fly back to initial view
+        map.flyTo({
+            center: [3.0420, 36.7538], // Algiers coordinates
+            zoom: 2,
+            duration: 2000
+        }).on('moveend', () => {
+            // After the fly animation completes, add the animated paths
+            addAnimatedPaths();
+            // Start the panning animation immediately
+            isPanning = true;
+            animate();
+        });
+    }
+
+    // Listen for the moveend event after flyToCopenhagen
+    map.on('moveend', () => {
+        const center = map.getCenter();
+        console.log('Map center:', center);
+        
+        // Check if we're close enough to the target coordinates
+        const isAtTarget = Math.abs(center.lng - 11.1111) < 0.1 && 
+                          Math.abs(center.lat - 54.5000) < 0.1;
+        
+        if (isAtTarget && !markersAdded) {
+            console.log('Adding markers...');
+            addMarkers();
+        }
+    });
+
+    // Start the animation immediately
+    animate();
+</script>
+
+</body>
+</html>
